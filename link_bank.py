@@ -204,87 +204,33 @@ def build_local_indices():
     }
 
 
-def find_local_for_entry(entry, indices):
-    """
-    Busca si una entrada de Link Bank está presente localmente en disco.
-    Comprueba:
-      1. Coincidencia por Civitai Version ID en models_cache
-      2. Coincidencia por Civitai Model ID en models_cache
-      3. Coincidencia por SHA256 si está disponible
-      4. Coincidencia por nombre de archivo (filename o cualquiera en files[])
-    Devuelve (status, local_path, matched_filename)
-    """
-    version_id = str(entry.get("version_id") or "").strip()
-    model_id = str(entry.get("model_id") or "").strip()
-    sha256 = str(entry.get("sha256") or "").strip().lower()
-
-    # 1. Civitai Version ID
-    if version_id and version_id in indices["civitai_version_index"]:
-        path = indices["civitai_version_index"][version_id]
-        if os.path.exists(path):
-            return "present", path, os.path.basename(path)
-
-    # 2. SHA256
-    if sha256 and sha256 in indices["sha256_index"]:
-        path = indices["sha256_index"][sha256]
-        if os.path.exists(path):
-            return "present", path, os.path.basename(path)
-
-    # 3. Filenames
-    names = _expected_filenames_from_entry(entry)
-    size_bytes = int(entry.get("size_bytes") or 0)
-    category = (entry.get("category") or "").split("/")[0].lower()
-
-    candidates = []
-    for fn in names:
-        if not fn:
-            continue
-        base = os.path.basename(str(fn).replace("\\", "/")).lower()
-        hits = indices["filename_index"].get(base) or []
-        for h in hits:
-            candidates.append((base, h))
-
-    if candidates:
-        def _score(item):
-            _b, path = item
-            score = 0
-            if size_bytes:
-                try:
-                    sz = os.path.getsize(path)
-                    if abs(sz - size_bytes) < max(1024 * 1024, size_bytes * 0.01):
-                        score += 10
-                except Exception:
-                    pass
-            if category and category in path.lower().replace("\\", "/"):
-                score += 5
-            return -score
-
-        candidates.sort(key=_score)
-        base, path = candidates[0]
-        return "present", path, base
-
-    # 4. Civitai Model ID fallback
-    if model_id and model_id in indices["civitai_model_index"]:
-        paths = indices["civitai_model_index"][model_id]
-        for p in paths:
-            if os.path.exists(p):
-                return "present", p, os.path.basename(p)
-
-    return "missing", "", ""
+def _is_size_compatible(disk_size: int, expected_size: int) -> bool:
+    """Valida si el tamaño en disco es congruente con el tamaño esperado."""
+    if not expected_size or expected_size <= 0:
+        return disk_size > 0
+    tolerance = max(2 * 1024 * 1024, int(expected_size * 0.02))
+    return abs(disk_size - expected_size) <= tolerance
 
 
 def _expected_filenames_from_entry(entry):
-    names = []
-    fn = entry.get("filename") or ""
+    """
+    Retorna los nombres de archivo esperados.
+    Si la entrada tiene un filename principal explícito, solo busca ese
+    para no generar falsos positivos con otros archivos del mismo modelo.
+    """
+    fn = (entry.get("filename") or "").strip()
     if fn:
-        names.append(fn)
+        return [fn]
+
+    names = []
     for f in entry.get("files") or []:
         if isinstance(f, dict):
-            n = f.get("filename") or f.get("name") or ""
+            n = (f.get("filename") or f.get("name") or "").strip()
             if n:
                 names.append(n)
-        elif isinstance(f, str):
-            names.append(f)
+        elif isinstance(f, str) and f.strip():
+            names.append(f.strip())
+
     seen = set()
     out = []
     for n in names:
@@ -293,6 +239,92 @@ def _expected_filenames_from_entry(entry):
             seen.add(k)
             out.append(n)
     return out
+
+
+def find_local_for_entry(entry, indices):
+    """
+    Busca si una entrada de Link Bank está presente localmente en disco.
+    Criterios rigurosos para evitar falsos positivos entre archivos del mismo repo:
+      1. Coincidencia por SHA256 (si está disponible y el archivo existe).
+      2. Coincidencia por nombre de archivo exacto con validación de tamaño (> 0 y ±2%).
+      3. Coincidencia por Version ID en models_cache ÚNICAMENTE si coincide
+         el nombre de archivo o el tamaño es compatible.
+      (El fallback ciego por model_id queda eliminado para evitar que el VAE
+       bloquee la descarga de Text Encoders o DiTs del mismo modelo).
+    Devuelve (status, local_path, matched_filename)
+    """
+    target_fn = (entry.get("filename") or "").strip().lower()
+    version_id = str(entry.get("version_id") or "").strip()
+    sha256 = str(entry.get("sha256") or "").strip().lower()
+    size_bytes = int(entry.get("size_bytes") or 0)
+    category = (entry.get("category") or "").split("/")[0].lower()
+
+    # 1. SHA256 (Identificación criptográfica exacta)
+    if sha256 and sha256 in indices.get("sha256_index", {}):
+        path = indices["sha256_index"][sha256]
+        if os.path.isfile(path) and os.path.getsize(path) > 0:
+            return "present", path, os.path.basename(path)
+
+    # 2. Búsqueda por Nombre de Archivo en directorios de ComfyUI
+    names = _expected_filenames_from_entry(entry)
+    candidates = []
+    for fn in names:
+        if not fn:
+            continue
+        base = os.path.basename(str(fn).replace("\\", "/")).lower()
+        hits = indices.get("filename_index", {}).get(base) or []
+        for h in hits:
+            if not os.path.isfile(h):
+                continue
+            try:
+                sz = os.path.getsize(h)
+                if sz == 0:
+                    continue  # Descartar archivos vacíos o corruptos
+                candidates.append((base, h, sz))
+            except OSError:
+                continue
+
+    if candidates:
+        valid_candidates = []
+        for base, path, sz in candidates:
+            # Si se conoce el tamaño esperado, validar compatibilidad
+            if size_bytes > 0 and not _is_size_compatible(sz, size_bytes):
+                continue
+
+            score = 0
+            if size_bytes > 0 and _is_size_compatible(sz, size_bytes):
+                score += 20
+            if category and category in path.lower().replace("\\", "/"):
+                score += 10
+            valid_candidates.append((score, base, path))
+
+        if valid_candidates:
+            valid_candidates.sort(key=lambda x: -x[0])
+            _, base, path = valid_candidates[0]
+            return "present", path, base
+
+    # 3. Civitai Version ID (Solo aceptado si valida tamaño o nombre)
+    if version_id and version_id.lower() not in ("main", "master", "latest", "direct", ""):
+        cached_paths = indices.get("civitai_version_index", {}).get(version_id)
+        if cached_paths:
+            if isinstance(cached_paths, str):
+                cached_paths = [cached_paths]
+            for p in cached_paths:
+                if not os.path.isfile(p):
+                    continue
+                p_base = os.path.basename(p).lower()
+                try:
+                    p_size = os.path.getsize(p)
+                except OSError:
+                    continue
+
+                name_match = (target_fn and p_base == target_fn)
+                size_match = _is_size_compatible(p_size, size_bytes) if size_bytes > 0 else False
+
+                if name_match or size_match:
+                    return "present", p, os.path.basename(p)
+
+    return "missing", "", ""
 
 
 def refresh_entry_local_status(entry, indices=None):
@@ -448,14 +480,20 @@ def add_link(payload):
         model_id = str(payload.get("model_id") or "").strip()
         version_id = str(payload.get("version_id") or "").strip()
 
+        payload_fn = (payload.get("filename") or "").strip().lower()
+        payload_dl = (payload.get("download_url") or "").strip().lower()
+
         for e in bank.get("links", []):
             e_url = (e.get("url") or "").strip().lower().rstrip("/")
-            is_same_url = (e_url == norm_url)
-            is_same_model = (
+            e_dl = (e.get("download_url") or "").strip().lower()
+            e_fn = (e.get("filename") or "").strip().lower()
+            is_same_url = (e_url == norm_url) or (bool(payload_dl) and bool(e_dl) and e_dl == payload_dl)
+            is_same_model_file = (
                 bool(model_id) and str(e.get("model_id") or "") == model_id
                 and (not version_id or not e.get("version_id") or str(e.get("version_id") or "") == version_id)
+                and (not payload_fn or not e_fn or payload_fn == e_fn)
             )
-            if is_same_url or is_same_model:
+            if is_same_url or (bool(payload_fn) and is_same_model_file and payload_fn == e_fn):
                 refresh_entry_local_status(e, indices)
                 save_link_bank(bank)
                 return _public_entry(e), True
@@ -502,14 +540,19 @@ def add_link(payload):
         norm_url = url.strip().lower().rstrip("/")
         model_id = str(entry.get("model_id") or "").strip()
         version_id = str(entry.get("version_id") or "").strip()
+        entry_fn = (entry.get("filename") or "").strip().lower()
+        entry_dl = (entry.get("download_url") or "").strip().lower()
         for e in bank.get("links", []):
             e_url = (e.get("url") or "").strip().lower().rstrip("/")
-            is_same_url = (e_url == norm_url)
-            is_same_model = (
+            e_dl = (e.get("download_url") or "").strip().lower()
+            e_fn = (e.get("filename") or "").strip().lower()
+            is_same_url = (e_url == norm_url) or (bool(entry_dl) and bool(e_dl) and e_dl == entry_dl)
+            is_same_model_file = (
                 bool(model_id) and str(e.get("model_id") or "") == model_id
                 and (not version_id or not e.get("version_id") or str(e.get("version_id") or "") == version_id)
+                and (not entry_fn or not e_fn or entry_fn == e_fn)
             )
-            if is_same_url or is_same_model:
+            if is_same_url or (bool(entry_fn) and is_same_model_file and entry_fn == e_fn):
                 indices = build_local_indices()
                 refresh_entry_local_status(e, indices)
                 save_link_bank(bank)

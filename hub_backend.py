@@ -219,11 +219,13 @@ def cleanup_model_artifacts(full_path):
                 os.path.join(root, f"{filename}.preview{img_ext}")
             ])
         for sidecar in dict.fromkeys(sidecars):
-            if not os.path.isfile(sidecar):
-                continue
             try:
                 if not os.path.islink(sidecar):
-                    os.chmod(sidecar, stat.S_IWRITE)
+                    try:
+                        cur_m = os.stat(sidecar).st_mode
+                        os.chmod(sidecar, cur_m | stat.S_IWUSR | stat.S_IRUSR)
+                    except Exception:
+                        pass
                 os.remove(sidecar)
             except OSError:
                 pass
@@ -266,6 +268,9 @@ def get_aria2_executable():
     linux_candidates = [
         "/usr/bin/aria2c",
         "/usr/local/bin/aria2c",
+        "/workspace/bin/aria2c",
+        os.path.join(sys.prefix, "bin", "aria2c"),
+        os.path.join(BIN_DIR, "aria2c"),
         "/opt/conda/bin/aria2c",
         "/root/bin/aria2c",
         os.path.expanduser("~/.local/bin/aria2c")
@@ -298,12 +303,15 @@ def install_aria2_linux():
     except Exception as e:
         return False, f"Error durante la instalación de aria2: {e}"
 
+_ARIA2_AUTO_INSTALL_ATTEMPTED = False
+
 def ensure_aria2_binary():
+    global _ARIA2_AUTO_INSTALL_ATTEMPTED
     if sys.platform == "win32":
         return None
     exe = get_aria2_executable()
-    if not exe and sys.platform != "win32":
-        # En Linux (Vast.ai), intenta auto-instalar silenciosamente si somos root y apt-get existe
+    if not exe and not _ARIA2_AUTO_INSTALL_ATTEMPTED:
+        _ARIA2_AUTO_INSTALL_ATTEMPTED = True
         try:
             is_root = (hasattr(os, "geteuid") and os.geteuid() == 0)
             if is_root and shutil.which("apt-get"):
@@ -397,33 +405,47 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
     tag_str = " ".join(tags)
     combined_text = f"{fn} {ph} {repo} {bm} {tag_str}".lower()
 
-    # 1. VAE / Autoencoders
-    if mt == "VAE" or "/vae" in combined_path or "split_files/vae" in combined_path:
+    # 1. VAE / Autoencoders (highest priority before repo DiT)
+    vae_keywords = [
+        "vae.safetensors", "ae.safetensors", "ae.sft", "ae.pt", "ae.pth",
+        "vae.pt", "vae.pth", "taesd", "taef1", "taewan", "qwen_image_vae"
+    ]
+    is_vae_path = "/vae" in combined_path or "split_files/vae" in combined_path or "/autoencoder" in combined_path
+    if mt == "VAE" or is_vae_path:
         return ("vae", "Detectado como VAE / Autoencoder (Ruta/Tipo)")
-    if any(k in fn for k in ["_vae.", "-vae.", "vae.safetensors", "ae.safetensors", "ae.sft", "taesd", "qwen_image_vae"]):
+    if any(k in fn for k in vae_keywords) or re.search(r'(?:^|[\W_])(?:vae|ae|taesd|taef1|taewan)(?:[\W_]|\.|$)', fn, re.I):
         return ("vae", "Detectado como VAE / Autoencoder (Nombre de archivo)")
     if ("vae" in fn or "autoencoder" in fn) and not any(x in fn for x in ["diffusion_models", "checkpoint", "lora"]):
         return ("vae", "Detectado como VAE / Autoencoder")
 
-    # 2. Text Encoders & CLIP (prioritized before DiT base so Hunyuan UMT5 or Anima Qwen goes to text_encoders)
-    text_enc_keywords = [
-        "text_encoder", "text_encoders", "t5xxl", "t5_xxl", "t5-v1_1", "clip_l", "clip_g", "clip_h",
-        "qwen_3_06b", "qwen2.5", "qwen2_vl", "umt5", "google/t5", "clip-vit", "clip_vit",
-        "llama-3", "llama_3", "text_encoder_2"
-    ]
-    if "/text_encoder" in combined_path or "/clip/" in combined_path or "split_files/text_encoders" in combined_path:
+    # 2. Text Encoders & CLIP (robust regex across Qwen, T5, CLIP, Gemma, LLaMA, etc.)
+    text_enc_regex = (
+        r'(?:^|[\W_])('
+        r'qwen[\W_]*(?:2(?:\.5)?|3(?:\.06b)?|vl)?|'
+        r'(?:google[\W_]*)?t5(?:[\W_]*(?:xxl|v1_1|fp16|fp8|base|large|small))?|'
+        r'(?:open[\W_]*)?clip(?:[\W_]*(?:l|g|h|vit|bigg|base|pytorch))?|'
+        r'gemma(?:[\W_]*[23])?|'
+        r'llama(?:[\W_]*[23])?|'
+        r'umt5|mt5|bert|glm4|text_encoder|textencoder|tokenizer'
+        r')(?:[\W_]|$|\.)'
+    )
+    is_text_enc_path = (
+        "/text_encoder" in combined_path or "/clip/" in combined_path or
+        "split_files/text_encoders" in combined_path or "/tokenizer" in combined_path
+    )
+    if mt in ["CLIP", "TEXT_ENCODER", "TEXTENCODER"] or is_text_enc_path:
         return ("text_encoders", "Detectado como Text Encoder (Ruta/Carpeta)")
-    if any(k in fn for k in text_enc_keywords) or any(k in ph for k in text_enc_keywords):
-        return ("text_encoders", "Detectado como Text Encoder (CLIP/T5/Qwen/UMT5)")
+    if re.search(text_enc_regex, fn, re.I) or re.search(text_enc_regex, ph, re.I):
+        return ("text_encoders", "Detectado como Text Encoder (CLIP/T5/Qwen/Gemma/LLaMA/UMT5)")
 
-    # 3. Clip Vision
+    # 3. Clip Vision (Image Encoders)
     if "/clip_vision" in combined_path or any(k in fn for k in ["clip_vision", "clip-vit-h", "clip-vit-bigg", "image_encoder", "ipadapter_clip"]):
         return ("clip_vision", "Detectado como CLIP Vision (Image Encoder)")
 
     # 4. LoRA / LyCORIS / LoCon / DoRA
     if mt in ["LORA", "LOCON", "DORA"] or "lora" in tags:
         return ("loras", f"Detectado como LoRA ({mt or 'LoRA'})")
-    if any(k in fn for k in ["_lora", "-lora", ".lora", "lycoris", "locon", "dora"]):
+    if any(k in fn for k in ["_lora", "-lora", ".lora", "lycoris", "locon", "dora", "adapter_model"]):
         return ("loras", "Detectado como LoRA (Nombre de archivo)")
     if "/lora" in combined_path or "/lycoris" in combined_path:
         return ("loras", "Detectado como LoRA (Ruta)")
@@ -449,6 +471,7 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
         return ("embeddings", "Detectado como Embedding")
 
     # 8. Modern DiT & Video Diffusion Models (Anima, Wan 2.1, Flux, SD3/3.5, Hunyuan, CogVideo, Mochi, LTX)
+    # Repo matching ONLY applies if the file is NOT a subcomponent (VAE, text encoder, etc.)
     dit_architectures = [
         ("anima", "Anima DiT"),
         ("wan2.1", "Wan 2.1 Video"),
@@ -475,14 +498,13 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
     for arch_key, arch_label in dit_architectures:
         matched = False
         if arch_key == "wan":
-            # Avoid false positives like Taiwan, Wanderer, Swann
             if re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', fn, re.I) or \
                re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', bm, re.I) or \
                re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', repo, re.I) or \
                (re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', combined_text, re.I) and is_dit_path):
                 matched = True
         else:
-            if arch_key in bm or arch_key in fn or arch_key in repo or arch_key in ph or (arch_key in combined_text and is_dit_path):
+            if arch_key in bm or arch_key in fn or arch_key in ph or (arch_key in combined_text and is_dit_path) or arch_key in repo:
                 matched = True
         if matched:
             return ("diffusion_models", f"Detectado como DiT Diffusion Model ({arch_label})")
@@ -566,6 +588,8 @@ def get_target_directory_for_category(category, subfolder=""):
     else:
         base_cat, sub = category, ""
 
+    base_cat = base_cat.strip().lower()
+
     if subfolder:
         clean_extra = subfolder.strip().replace("\\", "/").strip("/")
         if not sub:
@@ -581,36 +605,56 @@ def get_target_directory_for_category(category, subfolder=""):
         raise ValueError("Categoría de modelos no válida")
 
     paths = []
-    if hasattr(folder_paths, "folder_names_and_paths") and base_cat in folder_paths.folder_names_and_paths:
-        try:
-            paths = folder_paths.get_folder_paths(base_cat) or []
-        except Exception:
-            paths = []
+    if hasattr(folder_paths, "folder_names_and_paths"):
+        if base_cat in folder_paths.folder_names_and_paths:
+            try:
+                paths = folder_paths.get_folder_paths(base_cat) or []
+            except Exception:
+                paths = []
+        elif base_cat == "text_encoders" and "clip" in folder_paths.folder_names_and_paths:
+            try:
+                paths = folder_paths.get_folder_paths("clip") or []
+            except Exception:
+                paths = []
+
+    # Priorizar almacenamiento persistente en Vast.ai / RunPod (/workspace)
+    workspace_candidates = [p for p in paths if p.startswith("/workspace") or "workspace" in p.lower()]
+    ordered_paths = workspace_candidates + [p for p in paths if p not in workspace_candidates]
 
     target = None
     if base_cat == "diffusion_models":
-        for p in paths:
+        for p in ordered_paths:
             if os.path.basename(os.path.normpath(p)).lower() == "diffusion_models":
                 target = p
                 break
         if not target:
             target = os.path.join(folder_paths.models_dir, "diffusion_models")
     elif base_cat == "text_encoders":
-        for p in paths:
-            if os.path.basename(os.path.normpath(p)).lower() == "text_encoders":
+        for p in ordered_paths:
+            b_name = os.path.basename(os.path.normpath(p)).lower()
+            if b_name in ("text_encoders", "clip"):
                 target = p
                 break
         if not target:
-            target = os.path.join(folder_paths.models_dir, "text_encoders")
-    elif paths:
-        # Check write access for multi-path setups (Vast.ai, RunPod, container mounts)
-        target = None
-        for p in paths:
+            te_dir = os.path.join(folder_paths.models_dir, "text_encoders")
+            clip_dir = os.path.join(folder_paths.models_dir, "clip")
+            if os.path.isdir(te_dir):
+                target = te_dir
+            elif os.path.isdir(clip_dir):
+                target = clip_dir
+            else:
+                target = te_dir
+    elif ordered_paths:
+        for p in ordered_paths:
             if os.path.exists(p) and os.access(p, os.W_OK):
                 target = p
                 break
+            parent = os.path.dirname(p)
+            if os.path.exists(parent) and os.access(parent, os.W_OK):
+                target = p
+                break
         if not target:
-            target = paths[0]
+            target = ordered_paths[0]
     else:
         target = os.path.join(folder_paths.models_dir, base_cat)
 
@@ -972,9 +1016,16 @@ class DownloadTask:
                 self.status = "paused"
                 return
 
-            # Check disk space before proceeding
+            # Check disk space before proceeding (accounting for existing partial download)
             if self.total_bytes > 0:
-                has_space, free_b, req_b = check_disk_space(self.target_dir, self.total_bytes)
+                current_part_size = 0
+                if os.path.exists(self.part_path):
+                    try:
+                        current_part_size = os.path.getsize(self.part_path)
+                    except Exception:
+                        pass
+                needed_bytes = max(0, self.total_bytes - current_part_size)
+                has_space, free_b, req_b = check_disk_space(self.target_dir, needed_bytes)
                 if not has_space:
                     raise Exception(f"Espacio insuficiente en disco. Libre: {format_bytes_human(free_b)}, Requerido: {format_bytes_human(req_b)}")
 
@@ -1068,7 +1119,8 @@ class DownloadTask:
             if os.path.exists(self.part_path):
                 if os.path.exists(self.target_path):
                     try:
-                        os.chmod(self.target_path, stat.S_IWRITE)
+                        cur_m = os.stat(self.target_path).st_mode
+                        os.chmod(self.target_path, cur_m | stat.S_IWUSR | stat.S_IRUSR)
                         os.remove(self.target_path)
                     except Exception: pass
                 # Robust replace loop with retry to handle Windows Defender / indexer file locks
@@ -1164,6 +1216,8 @@ class DownloadTask:
 
         cmd = [
             aria2_exe,
+            "-c",
+            "--continue=true",
             "-x", str(self.connections),
             "-s", str(self.connections),
             "-j", str(ARIA2_MAX_CONNECTIONS),
@@ -1186,7 +1240,11 @@ class DownloadTask:
             cmd.extend(["--header", "Referer: https://huggingface.co/"])
 
         target_host = (urlsplit(resolved_url).hostname or "").lower()
-        is_storage_cdn = target_host.startswith("b2.") or "cdn" in target_host or "xet" in target_host
+        is_storage_cdn = (
+            target_host.startswith("b2.") or "cdn" in target_host or "xet" in target_host or
+            "amazonaws.com" in target_host or "cloudfront.net" in target_host or
+            "r2.cloudflarestorage.com" in target_host or "blob.core.windows.net" in target_host
+        )
         if self.auth_token and not is_storage_cdn:
             cmd.extend(["--header", f"Authorization: Bearer {self.auth_token}"])
 
@@ -1528,6 +1586,21 @@ class DownloadTask:
                         mode = "wb"
                         self.downloaded_bytes = 0
                         continue
+                    if resp.status_code in (401, 403):
+                        if os.path.exists(self.part_path) and os.path.getsize(self.part_path) < 100 * 1024:
+                            try: os.remove(self.part_path)
+                            except Exception: pass
+                        raise PermissionError(f"HTTP {resp.status_code}: Acceso denegado o autenticación requerida. Configura tu API Token en 'API Tokens'.")
+                    if resp.status_code == 404:
+                        if os.path.exists(self.part_path) and os.path.getsize(self.part_path) < 100 * 1024:
+                            try: os.remove(self.part_path)
+                            except Exception: pass
+                        raise FileNotFoundError(f"HTTP 404: El archivo no existe en el servidor remoto.")
+                    if resp.status_code == 429:
+                        retry_after = resp.headers.get("Retry-After")
+                        wait_sec = int(retry_after) if retry_after and retry_after.isdigit() else int(retry_delay * 2)
+                        time.sleep(min(wait_sec, 30))
+                        continue
                     if resp.status_code not in (200, 206):
                         raise Exception(f"HTTP {resp.status_code}: {resp.reason}")
 
@@ -1581,6 +1654,8 @@ class DownloadTask:
                     else:
                         # Full file received!
                         break
+            except (PermissionError, FileNotFoundError) as fatal_e:
+                raise fatal_e
             except Exception as e:
                 if self.cancel_event.is_set() or self.pause_event.is_set():
                     break
@@ -1642,8 +1717,9 @@ class HubDownloadManager:
         try:
             if os.path.isfile(preview_path):
                 try:
-                    os.chmod(preview_path, stat.S_IWRITE)
-                except OSError:
+                    cur_m = os.stat(preview_path).st_mode
+                    os.chmod(preview_path, cur_m | stat.S_IWUSR | stat.S_IRUSR)
+                except Exception:
                     pass
                 os.remove(preview_path)
                 return True
@@ -2366,13 +2442,14 @@ def _inspect_universal_url_raw(raw_url):
             "status": "ok",
             "provider": "huggingface",
             "data": {
-                "id": repo_id,
+                "id": f"{repo_id}:{clean_file_path}",
+                "repo_id": repo_id,
                 "name": f"{repo_id}: {filename}",
                 "type": cat.title(),
                 "creator": repo_id.split("/")[0],
                 "top_cover": "",
                 "versions": [{
-                    "id": branch,
+                    "id": f"{branch}:{clean_file_path}",
                     "name": branch,
                     "base_model": "",
                     "trained_words": [],
@@ -2428,6 +2505,7 @@ def _inspect_universal_url_raw(raw_url):
                 "provider": "huggingface",
                 "data": {
                     "id": repo_id,
+                    "repo_id": repo_id,
                     "name": repo_id,
                     "type": "Hugging Face Repo",
                     "creator": repo_id.split("/")[0],
@@ -2471,13 +2549,13 @@ def _inspect_universal_url_raw(raw_url):
         "status": "ok",
         "provider": "direct",
         "data": {
-            "id": "direct",
+            "id": f"direct:{filename}",
             "name": filename,
             "type": cat.title(),
             "creator": "Direct Link",
             "top_cover": "",
             "versions": [{
-                "id": "direct",
+                "id": f"direct:{filename}",
                 "name": "Enlace Directo",
                 "base_model": "",
                 "trained_words": [],
@@ -2926,7 +3004,7 @@ def register_hub_routes(routes):
                     "can_install_linux": False,
                     "max_connections": 1
                 })
-            exe = ensure_aria2_binary()
+            exe = get_aria2_executable()
             active = bool(exe and os.path.exists(exe))
             version_str = ""
             if active:
@@ -2960,13 +3038,15 @@ def register_hub_routes(routes):
     @routes.post("/universe_downloader/api/hub/install_aria2")
     async def api_hub_install_aria2(request):
         try:
-            # This endpoint runs `apt-get install` as root, so it must be opt-in:
-            # ComfyUI often binds 0.0.0.0 and any LAN client could otherwise
-            # trigger a package installation.
-            if not os.environ.get("UNIVERSE_STUDIO_ALLOW_ARIA2_INSTALL"):
+            allow_install = (
+                os.environ.get("UNIVERSE_DOWNLOADER_ALLOW_ARIA2_INSTALL") or
+                os.environ.get("UNIVERSE_STUDIO_ALLOW_ARIA2_INSTALL") or
+                (sys.platform != "win32" and hasattr(os, "geteuid") and os.geteuid() == 0)
+            )
+            if not allow_install:
                 return web.json_response({
                     "status": "error",
-                    "message": "Instalación remota deshabilitada. Define UNIVERSE_STUDIO_ALLOW_ARIA2_INSTALL=1 en el servidor si realmente quieres permitirlo."
+                    "message": "Instalación remota deshabilitada. Define UNIVERSE_DOWNLOADER_ALLOW_ARIA2_INSTALL=1 en el servidor si deseas permitirlo."
                 }, status=403)
             if sys.platform == "win32":
                 return web.json_response({"status": "error", "message": "Instalación de aria2 solo disponible en sistemas Linux (Vast.ai / RunPod / Docker). En Windows se utiliza el motor nativo de Python."}, status=400)

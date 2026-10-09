@@ -5827,8 +5827,9 @@ function isUrlAlreadyAdded(url) {
         const ver = item.versions && item.versions[0];
         const file = ver && ver.files && ver.files[0];
         if (file && file.download_url && normalizeModelUrl(file.download_url) === norm) return true;
-        if (civ && civ.modelId && String(item.id) === civ.modelId) {
-            if (!civ.versionId || !ver || !ver.id || String(ver.id) === civ.versionId) {
+        // Civitai: solo duplicado si coincide tanto el modelId como la versionId específica
+        if (civ && civ.modelId && civ.versionId && String(item.id) === civ.modelId) {
+            if (ver && ver.id && String(ver.id) === civ.versionId) {
                 return true;
             }
         }
@@ -5840,7 +5841,8 @@ function isUrlAlreadyAdded(url) {
         if (!task) continue;
         if (task.url && normalizeModelUrl(task.url) === norm) return true;
         const taskModelId = task.civitai_info?.model_id || task.model_id;
-        if (civ && civ.modelId && String(taskModelId) === civ.modelId) {
+        const taskVerId = task.civitai_info?.version_id;
+        if (civ && civ.modelId && civ.versionId && String(taskModelId) === civ.modelId && String(taskVerId) === civ.versionId) {
             return true;
         }
     }
@@ -5851,10 +5853,8 @@ function isUrlAlreadyAdded(url) {
         if (!item) continue;
         if (item.url && normalizeModelUrl(item.url) === norm) return true;
         if (item.download_url && normalizeModelUrl(item.download_url) === norm) return true;
-        if (civ && civ.modelId && String(item.model_id) === civ.modelId) {
-            if (!civ.versionId || !item.version_id || String(item.version_id) === civ.versionId) {
-                return true;
-            }
+        if (civ && civ.modelId && civ.versionId && String(item.model_id) === civ.modelId && String(item.version_id) === civ.versionId) {
+            return true;
         }
     }
 
@@ -5901,41 +5901,47 @@ async function readClipboardText() {
 
 function isModelMetadataAlreadyAdded(data) {
     if (!data) return false;
-    const modelId = data.id ? String(data.id) : '';
     const ver = data.versions && data.versions[0];
-    const versionId = ver && ver.id ? String(ver.id) : '';
     const file = ver && ver.files && ver.files[0];
-    const filename = file && file.filename ? file.filename.toLowerCase() : '';
+    const filename = file && file.filename ? file.filename.trim().toLowerCase() : '';
+    const dlUrl = file && file.download_url ? normalizeModelUrl(file.download_url) : '';
+    const srcUrl = data.sourceUrl ? normalizeModelUrl(data.sourceUrl) : '';
 
-    // Check inspectedResults
+    // 1. Check inspectedResults (staged cards)
     const inspected = hubState.inspectedResults || [];
     for (const item of inspected) {
         if (!item) continue;
-        if (modelId && item.id && String(item.id) === modelId) {
-            const itemVer = item.versions && item.versions[0];
-            if (!versionId || !itemVer || !itemVer.id || String(itemVer.id) === versionId) return true;
+        if (srcUrl && item.sourceUrl && normalizeModelUrl(item.sourceUrl) === srcUrl) return true;
+        const itemVer = item.versions && item.versions[0];
+        const itemFile = itemVer && itemVer.files && itemVer.files[0];
+        if (itemFile) {
+            const itemDl = itemFile.download_url ? normalizeModelUrl(itemFile.download_url) : '';
+            const itemFn = itemFile.filename ? itemFile.filename.trim().toLowerCase() : '';
+            if (dlUrl && itemDl && dlUrl === itemDl) return true;
+            if (filename && itemFn && filename === itemFn) return true;
         }
-        const itemFile = item.versions && item.versions[0] && item.versions[0].files && item.versions[0].files[0];
-        if (filename && itemFile && itemFile.filename && itemFile.filename.toLowerCase() === filename) return true;
     }
 
-    // Check tasks
+    // 2. Check active/completed tasks
     const tasks = hubState.tasks || [];
     for (const task of tasks) {
         if (!task) continue;
-        const taskModelId = task.civitai_info?.model_id || task.model_id;
-        if (modelId && taskModelId && String(taskModelId) === modelId) return true;
-        if (filename && task.filename && task.filename.toLowerCase() === filename) return true;
+        if (srcUrl && task.url && normalizeModelUrl(task.url) === srcUrl) return true;
+        const taskDl = task.url ? normalizeModelUrl(task.url) : '';
+        if (dlUrl && taskDl && dlUrl === taskDl) return true;
+        const taskFn = task.filename ? task.filename.trim().toLowerCase() : '';
+        if (filename && taskFn && filename === taskFn) return true;
     }
 
-    // Check bank
+    // 3. Check link bank
     const bank = hubState.linkBank || [];
     for (const item of bank) {
         if (!item) continue;
-        if (modelId && item.model_id && String(item.model_id) === modelId) {
-            if (!versionId || !item.version_id || String(item.version_id) === versionId) return true;
-        }
-        if (filename && item.filename && item.filename.toLowerCase() === filename) return true;
+        if (srcUrl && item.url && normalizeModelUrl(item.url) === srcUrl) return true;
+        const bankDl = item.download_url ? normalizeModelUrl(item.download_url) : '';
+        if (dlUrl && bankDl && dlUrl === bankDl) return true;
+        const bankFn = item.filename ? item.filename.trim().toLowerCase() : '';
+        if (filename && bankFn && filename === bankFn) return true;
     }
 
     return false;
