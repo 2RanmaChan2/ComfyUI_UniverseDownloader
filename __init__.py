@@ -1,7 +1,7 @@
 """
 Universe Downloader Comfyui
 Gestor y Hub de Descargas inteligente para ComfyUI (Civitai, Hugging Face, Enlaces directos).
-Presiona 'g' dos veces rápido (gg) para abrir en el lienzo.
+Botón flotante en el lateral derecho de la pantalla para abrir al instante.
 """
 import os
 import sys
