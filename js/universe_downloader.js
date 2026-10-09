@@ -5315,6 +5315,90 @@ const MASTER_CSS = `
 body.hk-downloader-active {
     overflow: hidden !important;
 }
+
+/* Floating Draggable Launcher Button */
+#universe-downloader-launcher-btn {
+    position: fixed;
+    right: 0px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 48px;
+    background: rgba(8, 8, 11, 0.94);
+    border: 1px solid rgba(168, 85, 247, 0.55);
+    border-right: none;
+    border-radius: 12px 0 0 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.8), 0 0 16px rgba(168, 85, 247, 0.25);
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, opacity 0.2s ease;
+}
+
+#universe-downloader-launcher-btn:hover {
+    background: rgba(18, 12, 28, 0.98);
+    border-color: #a855f7;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.95), 0 0 24px rgba(168, 85, 247, 0.55);
+}
+
+#universe-downloader-launcher-btn.is-dragging {
+    cursor: grabbing !important;
+    opacity: 0.92;
+    transform: scale(1.06) !important;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.98), 0 0 28px rgba(168, 85, 247, 0.7) !important;
+    transition: none !important;
+}
+
+#universe-downloader-launcher-btn .hk-launcher-inner {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    color: #c084fc;
+}
+
+#universe-downloader-launcher-btn:hover .hk-launcher-inner {
+    color: #ffffff;
+}
+
+#universe-downloader-launcher-btn .hk-launcher-icon {
+    transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), stroke 0.2s ease;
+}
+
+#universe-downloader-launcher-btn:hover .hk-launcher-icon {
+    transform: translateY(2px) scale(1.12);
+}
+
+#universe-downloader-launcher-btn .hk-launcher-badge {
+    position: absolute;
+    top: -5px;
+    left: -5px;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 9px;
+    background: #a855f7;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 800;
+    font-family: var(--hk-mono, monospace);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 0 10px #a855f7;
+    animation: hkBadgePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes hkBadgePulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.18); }
+}
 `;
 
 // ============================================================================
@@ -7362,6 +7446,18 @@ function updateTasksViewContent() {
     if (countBadge) {
         countBadge.innerText = `${(hubState.tasks || []).length} descargas`;
     }
+
+    // Actualizar contador del botón flotante si hay descargas en curso
+    const activeTasks = (hubState.tasks || []).filter(t => t.status === 'downloading').length;
+    const launcherBadge = document.getElementById('hk-launcher-badge');
+    if (launcherBadge) {
+        if (activeTasks > 0) {
+            launcherBadge.textContent = String(activeTasks);
+            launcherBadge.style.display = 'flex';
+        } else {
+            launcherBadge.style.display = 'none';
+        }
+    }
 }
 
 function renderHubStageContent() {
@@ -7723,6 +7819,9 @@ export function openUniverseDownloader() {
     overlay.style.display = 'flex';
     document.body.classList.add('hk-downloader-active');
 
+    const launcher = document.getElementById('universe-downloader-launcher-btn');
+    if (launcher) launcher.style.opacity = '0.2';
+
     // Inicializar tareas, banco de enlaces y datos en segundo plano
     initHubViewIfNeeded();
 
@@ -7738,6 +7837,10 @@ export function closeUniverseDownloader() {
     const overlay = document.getElementById('universe-downloader-overlay');
     if (overlay) overlay.style.display = 'none';
     document.body.classList.remove('hk-downloader-active');
+
+    const launcher = document.getElementById('universe-downloader-launcher-btn');
+    if (launcher) launcher.style.opacity = '1';
+
     stopHubTasksPolling();
     stopLinkBankPolling();
 }
@@ -7752,6 +7855,180 @@ window.openUniverseDownloader = openUniverseDownloader;
 window.closeUniverseDownloader = closeUniverseDownloader;
 window.toggleUniverseDownloader = toggleUniverseDownloader;
 window.universeDownloaderState = universeDownloaderState;
+
+// ============================================================================
+// FLOATING DRAGGABLE LAUNCHER BUTTON (DEFAULT: CENTER FULL RIGHT)
+// ============================================================================
+
+function setDefaultLauncherPosition(launcher) {
+    launcher.style.right = '0px';
+    launcher.style.left = 'auto';
+    launcher.style.top = '50%';
+    launcher.style.bottom = 'auto';
+    launcher.style.transform = 'translateY(-50%)';
+    launcher.style.borderRadius = '12px 0 0 12px';
+    launcher.style.borderRight = 'none';
+}
+
+function createFloatingLauncher() {
+    let launcher = document.getElementById('universe-downloader-launcher-btn');
+    if (launcher) return launcher;
+
+    launcher = document.createElement('div');
+    launcher.id = 'universe-downloader-launcher-btn';
+    launcher.setAttribute('title', 'Universe Downloader (Arrastra para reubicar · Clic para abrir)');
+    launcher.innerHTML = `
+        <div class="hk-launcher-inner">
+            <svg class="hk-launcher-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <span class="hk-launcher-badge" id="hk-launcher-badge" style="display: none;">0</span>
+        </div>
+    `;
+
+    document.body.appendChild(launcher);
+
+    // Restaurar posición guardada o colocar en el centro a la extrema derecha
+    const savedPos = localStorage.getItem('universe_downloader_launcher_pos');
+    if (savedPos) {
+        try {
+            const { left, top } = JSON.parse(savedPos);
+            const btnW = 44;
+            const btnH = 48;
+            const maxL = Math.max(0, window.innerWidth - btnW);
+            const maxT = Math.max(0, window.innerHeight - btnH);
+            const clampL = Math.min(Math.max(0, left), maxL);
+            const clampT = Math.min(Math.max(0, top), maxT);
+            launcher.style.left = `${clampL}px`;
+            launcher.style.top = `${clampT}px`;
+            launcher.style.right = 'auto';
+            launcher.style.bottom = 'auto';
+            launcher.style.transform = 'none';
+
+            if (clampL < window.innerWidth - btnW - 6) {
+                launcher.style.borderRadius = '12px';
+                launcher.style.borderRight = '1px solid rgba(168, 85, 247, 0.55)';
+            }
+        } catch (e) {
+            setDefaultLauncherPosition(launcher);
+        }
+    } else {
+        setDefaultLauncherPosition(launcher);
+    }
+
+    setupLauncherDrag(launcher);
+    return launcher;
+}
+
+function setupLauncherDrag(launcher) {
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+    let initialLeft = 0;
+    let initialTop = 0;
+    let hasMoved = false;
+
+    const onPointerDown = (e) => {
+        if (e.button !== undefined && e.button !== 0) return;
+
+        isDragging = true;
+        hasMoved = false;
+        startX = e.clientX;
+        startY = e.clientY;
+
+        const rect = launcher.getBoundingClientRect();
+        initialLeft = rect.left;
+        initialTop = rect.top;
+
+        launcher.classList.add('is-dragging');
+        try { launcher.setPointerCapture(e.pointerId); } catch (err) {}
+
+        window.addEventListener('pointermove', onPointerMove, { passive: false });
+        window.addEventListener('pointerup', onPointerUp);
+        window.addEventListener('pointercancel', onPointerUp);
+    };
+
+    const onPointerMove = (e) => {
+        if (!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+            hasMoved = true;
+            e.preventDefault();
+        }
+
+        if (hasMoved) {
+            const btnW = launcher.offsetWidth || 44;
+            const btnH = launcher.offsetHeight || 48;
+            let newLeft = initialLeft + dx;
+            let newTop = initialTop + dy;
+
+            newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - btnW));
+            newTop = Math.max(0, Math.min(newTop, window.innerHeight - btnH));
+
+            launcher.style.left = `${newLeft}px`;
+            launcher.style.top = `${newTop}px`;
+            launcher.style.right = 'auto';
+            launcher.style.bottom = 'auto';
+            launcher.style.transform = 'none';
+
+            if (newLeft < window.innerWidth - btnW - 6) {
+                launcher.style.borderRadius = '12px';
+                launcher.style.borderRight = '1px solid rgba(168, 85, 247, 0.55)';
+            } else {
+                launcher.style.borderRadius = '12px 0 0 12px';
+                launcher.style.borderRight = 'none';
+            }
+        }
+    };
+
+    const onPointerUp = (e) => {
+        if (!isDragging) return;
+        isDragging = false;
+        launcher.classList.remove('is-dragging');
+
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerUp);
+
+        try { launcher.releasePointerCapture(e.pointerId); } catch (err) {}
+
+        if (hasMoved) {
+            const rect = launcher.getBoundingClientRect();
+            // Si queda a menos de 15px del borde derecho, pegarlo perfectamente a la derecha
+            if (window.innerWidth - rect.right < 15) {
+                launcher.style.right = '0px';
+                launcher.style.left = 'auto';
+                launcher.style.borderRadius = '12px 0 0 12px';
+                launcher.style.borderRight = 'none';
+                localStorage.setItem('universe_downloader_launcher_pos', JSON.stringify({
+                    left: window.innerWidth - (launcher.offsetWidth || 44),
+                    top: Math.round(rect.top)
+                }));
+            } else {
+                localStorage.setItem('universe_downloader_launcher_pos', JSON.stringify({
+                    left: Math.round(rect.left),
+                    top: Math.round(rect.top)
+                }));
+            }
+        } else {
+            // Clic limpio: abrir / cerrar Downloader
+            toggleUniverseDownloader();
+        }
+    };
+
+    launcher.addEventListener('pointerdown', onPointerDown);
+
+    // Doble clic: reiniciar a posición original (centro extrema derecha)
+    launcher.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        localStorage.removeItem('universe_downloader_launcher_pos');
+        setDefaultLauncherPosition(launcher);
+    });
+}
 
 // ============================================================================
 // GLOBAL KEYBOARD LISTENER (2x 'g' HOTKEY & ESCAPE)
@@ -7810,6 +8087,8 @@ app.registerExtension({
     async setup() {
         try {
             injectMasterStyles();
+            createFloatingLauncher();
+
             window.openUniverseDownloader = openUniverseDownloader;
             window.closeUniverseDownloader = closeUniverseDownloader;
             window.toggleUniverseDownloader = toggleUniverseDownloader;
@@ -7818,17 +8097,26 @@ app.registerExtension({
             if (app.menu && typeof app.menu.addMenuItem === 'function') {
                 try {
                     app.menu.addMenuItem({
-                        name: "Universe Downloader (gg)",
+                        name: "Universe Downloader",
                         icon: "pi pi-download",
                         action: () => toggleUniverseDownloader()
                     });
                 } catch (e) {}
             }
 
-            console.log("[Universe Downloader] Extensión cargada con éxito. Presiona 'g' dos veces rápido para abrir.");
+            console.log("[Universe Downloader] Extensión cargada con éxito. Botón flotante listo.");
         } catch (err) {
             console.error("[Universe Downloader] Error inicializando extensión:", err);
         }
     }
 });
+
+// Auto-montar botón flotante cuando el DOM esté disponible
+if (typeof document !== 'undefined') {
+    if (document.body) {
+        createFloatingLauncher();
+    } else {
+        window.addEventListener('DOMContentLoaded', () => createFloatingLauncher());
+    }
+}
 
