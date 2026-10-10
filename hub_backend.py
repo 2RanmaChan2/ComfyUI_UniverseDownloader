@@ -414,35 +414,12 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
     if mt == "VAE" or is_vae_path:
         return ("vae", "Detectado como VAE / Autoencoder (Ruta/Tipo)")
     if any(k in fn for k in vae_keywords) or re.search(r'(?:^|[\W_])(?:vae|ae|taesd|taef1|taewan)(?:[\W_]|\.|$)', fn, re.I):
-        return ("vae", "Detectado como VAE / Autoencoder (Nombre de archivo)")
-    if ("vae" in fn or "autoencoder" in fn) and not any(x in fn for x in ["diffusion_models", "checkpoint", "lora"]):
+        if not any(x in fn for x in ["checkpoint", "base", "pony", "sdxl", "illustrious", "no_vae"]):
+            return ("vae", "Detectado como VAE / Autoencoder (Nombre de archivo)")
+    if ("vae" in fn or "autoencoder" in fn) and not any(x in fn for x in ["diffusion_models", "checkpoint", "lora", "no_vae", "pruned"]):
         return ("vae", "Detectado como VAE / Autoencoder")
 
-    # 2. Text Encoders & CLIP (robust regex across Qwen, T5, CLIP, Gemma, LLaMA, etc.)
-    text_enc_regex = (
-        r'(?:^|[\W_])('
-        r'qwen[\W_]*(?:2(?:\.5)?|3(?:\.06b)?|vl)?|'
-        r'(?:google[\W_]*)?t5(?:[\W_]*(?:xxl|v1_1|fp16|fp8|base|large|small))?|'
-        r'(?:open[\W_]*)?clip(?:[\W_]*(?:l|g|h|vit|bigg|base|pytorch))?|'
-        r'gemma(?:[\W_]*[23])?|'
-        r'llama(?:[\W_]*[23])?|'
-        r'umt5|mt5|bert|glm4|text_encoder|textencoder|tokenizer'
-        r')(?:[\W_]|$|\.)'
-    )
-    is_text_enc_path = (
-        "/text_encoder" in combined_path or "/clip/" in combined_path or
-        "split_files/text_encoders" in combined_path or "/tokenizer" in combined_path
-    )
-    if mt in ["CLIP", "TEXT_ENCODER", "TEXTENCODER"] or is_text_enc_path:
-        return ("text_encoders", "Detectado como Text Encoder (Ruta/Carpeta)")
-    if re.search(text_enc_regex, fn, re.I) or re.search(text_enc_regex, ph, re.I):
-        return ("text_encoders", "Detectado como Text Encoder (CLIP/T5/Qwen/Gemma/LLaMA/UMT5)")
-
-    # 3. Clip Vision (Image Encoders)
-    if "/clip_vision" in combined_path or any(k in fn for k in ["clip_vision", "clip-vit-h", "clip-vit-bigg", "image_encoder", "ipadapter_clip"]):
-        return ("clip_vision", "Detectado como CLIP Vision (Image Encoder)")
-
-    # 4. LoRA / LyCORIS / LoCon / DoRA
+    # 2. LoRA / LyCORIS / LoCon / DoRA
     if mt in ["LORA", "LOCON", "DORA"] or "lora" in tags:
         return ("loras", f"Detectado como LoRA ({mt or 'LoRA'})")
     if any(k in fn for k in ["_lora", "-lora", ".lora", "lycoris", "locon", "dora", "adapter_model"]):
@@ -450,28 +427,58 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
     if "/lora" in combined_path or "/lycoris" in combined_path:
         return ("loras", "Detectado como LoRA (Ruta)")
 
-    # 5. ControlNet & T2I-Adapter
+    # 3. ControlNet & T2I-Adapter
     control_keywords = ["controlnet", "control_", "t2i_adapter", "t2i-adapter", "ip-adapter", "controlnet-union", "flux-controlnet"]
     if mt == "CONTROLNET" or "controlnet" in tags:
         return ("controlnet", "Detectado como ControlNet (Tipo/Tag)")
     if any(k in fn for k in control_keywords) or "/controlnet" in combined_path:
         return ("controlnet", "Detectado como ControlNet")
 
-    # 6. Upscale Models
+    # 4. Upscale Models
     upscale_keywords = ["esrgan", "ultrasharp", "remacri", "nomos", "dat2", "compact", "realcugan", "4x_", "4x-", "2x_", "8x_", "upscaler", "superscale"]
     if mt == "UPSCALER" or "upscaler" in tags:
         return ("upscale_models", "Detectado como Modelo Upscaler (Tipo)")
     if any(k in fn for k in upscale_keywords) or "/upscale" in combined_path:
         return ("upscale_models", "Detectado como Modelo Upscaler")
 
-    # 7. Embeddings / Textual Inversion
+    # 5. Embeddings / Textual Inversion
     if mt in ["TEXTUALINVERSION", "EMBEDDING"] or "textual inversion" in tags:
         return ("embeddings", "Detectado como Embedding / Textual Inversion")
     if any(k in fn for k in ["embedding", "ti_"]) or "/embedding" in combined_path:
         return ("embeddings", "Detectado como Embedding")
 
+    # 6. Clip Vision (Image Encoders)
+    if "/clip_vision" in combined_path or any(k in fn for k in ["clip_vision", "clip-vit-h", "clip-vit-bigg", "image_encoder", "ipadapter_clip"]):
+        return ("clip_vision", "Detectado como CLIP Vision (Image Encoder)")
+
+    # 7. Text Encoders & CLIP (Solo componentes dedicados, NUNCA modelos completos ni transformers DiT)
+    is_text_enc_path = (
+        "/text_encoder" in combined_path or "/clip/" in combined_path or
+        "split_files/text_encoders" in combined_path or "/tokenizer" in combined_path
+    )
+    if mt in ["CLIP", "TEXT_ENCODER", "TEXTENCODER"] or is_text_enc_path:
+        return ("text_encoders", "Detectado como Text Encoder (Ruta/Carpeta)")
+
+    is_standalone_clip = bool(re.search(r'(?:^|[\W_])clip[\W_]*(?:l|g|h|vit|bigg|base)(?:[\W_]|\.|$)', fn, re.I))
+    is_standalone_t5 = bool(re.search(r'(?:^|[\W_])t5(?:xxl|[\W_]*v1_1)?(?:[\W_]|\.|$)', fn, re.I) or re.search(r'^t5', fn, re.I))
+    is_standalone_umt5 = bool(re.search(r'(?:^|[\W_])umt5(?:[\W_]|\.|$)', fn, re.I))
+    is_explicit_encoder = bool(re.search(r'(?:^|[\W_])text[\W_]*encoder(?:[\W_]|\.|$)', fn, re.I))
+
+    has_dit_indicators = any(x in fn for x in [
+        "flux1-dev", "flux1-schnell", "flux1-kontext", "flux_dev", "flux_schnell",
+        "sd3.5_large", "sd3.5_medium", "sd3_medium", "sd3-medium",
+        "wan2.1_t2v", "wan2.1_i2v", "wan2.1_14b", "wan2.1_1.3b",
+        "hunyuan_video", "hunyuanvideo", "cogvideox", "mochi", "ltx-video", "ltxvideo",
+        "transformer", "diffusion_model", "dit", "unet"
+    ])
+    has_ckpt_indicators = (mt == "CHECKPOINT") or any(x in fn for x in [
+        "pony", "sdxl", "illustrious", "sd15", "sd-1.5", "v1-5", "noobai", "checkpoint"
+    ]) or any(x in bm for x in ["pony", "sdxl", "illustrious", "sd15", "sd-1.5", "v1-5", "noobai"])
+
+    if (is_standalone_clip or is_standalone_t5 or is_standalone_umt5 or is_explicit_encoder) and not (has_dit_indicators or has_ckpt_indicators):
+        return ("text_encoders", "Detectado como Text Encoder (CLIP/T5/UMT5)")
+
     # 8. Modern DiT & Video Diffusion Models (Anima, Wan 2.1, Flux, SD3/3.5, Hunyuan, CogVideo, Mochi, LTX)
-    # Standalone diffusion transformers/unets without bundled text encoders/VAEs
     dit_architectures = [
         ("wan2.1", "Wan 2.1 Video"),
         ("wan2", "Wan 2 Video"),
@@ -492,41 +499,40 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
         ("auraflow", "AuraFlow DiT"),
         ("chameleon", "Chameleon"),
         ("kolors", "Kolors"),
+        ("cosmos", "Cosmos"),
+        ("consisid", "ConsisID"),
         ("anima", "Anima DiT")
     ]
     is_dit_path = "/diffusion_models" in combined_path or "split_files/diffusion_models" in combined_path or "transformer" in combined_path or "/unet" in combined_path
-    
-    # Check if explicitly a Checkpoint type (Civitai Checkpoints go to models/checkpoints)
-    is_full_checkpoint = (mt == "CHECKPOINT") or any(k in bm for k in ["illustrious", "pony", "sdxl", "sd 1.5", "sd 2.1", "sd-1.5", "sd-2.1", "v1-5", "v2-1", "noobai", "animagine"])
-    
-    if not is_full_checkpoint:
+
+    if not has_ckpt_indicators:
         for arch_key, arch_label in dit_architectures:
             matched = False
             if arch_key == "wan":
                 if re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', fn, re.I) or \
                    re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', ph, re.I) or \
-                   ((re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', bm, re.I) or re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', repo, re.I)) and is_dit_path):
+                   re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', repo, re.I):
                     matched = True
             elif arch_key in ["flux", "flux.1", "flux1"]:
-                # Flux standalone transformer (no checkpoint completo)
-                if any(x in fn for x in ["flux1-dev", "flux1-schnell", "flux1-kontext", "flux-dev", "flux-schnell", "flux_dev", "flux_schnell"]) or \
-                   ((arch_key in fn or arch_key in ph) and any(x in fn for x in ["transformer", "diffusion_model", "unet", "fp8", "bf16", "q4", "q8"])) or \
-                   is_dit_path:
+                if any(x in fn for x in ["flux1-dev", "flux1-schnell", "flux1-kontext", "flux-dev", "flux-schnell", "flux_dev", "flux_schnell", "flux-int8", "flux1-dev-int8", "flux-schnell-int8"]) or \
+                   ((arch_key in fn or arch_key in ph or arch_key in repo) and any(x in fn for x in ["transformer", "diffusion_model", "unet", "fp8", "bf16", "int8", "q4", "q8", "gguf", "model"])) or \
+                   (arch_key in repo and is_dit_path) or \
+                   (arch_key in repo and fn.endswith((".safetensors", ".gguf", ".bin"))):
                     matched = True
             else:
-                if (arch_key in fn or arch_key in ph) or ((arch_key in bm or arch_key in repo) and is_dit_path):
+                if (arch_key in fn or arch_key in ph or arch_key in repo):
                     matched = True
             if matched:
                 return ("diffusion_models", f"Detectado como DiT Diffusion Model ({arch_label})")
 
-        if is_dit_path:
-            return ("diffusion_models", "Detectado como Diffusion Model (Ruta)")
+        if is_dit_path or any(x in fn for x in ["diffusion_pytorch_model", "transformer.safetensors", "transformer.gguf"]):
+            return ("diffusion_models", "Detectado como Diffusion Model (Ruta/Estructura)")
 
     # 9. GGUF Quantized Models
     if fn.endswith(".gguf"):
-        if any(x in fn for x in ["t5", "qwen", "clip", "text_encoder"]):
+        if any(x in fn for x in ["clip_l", "clip_g", "t5xxl", "text_encoder", "encoder"]):
             return ("text_encoders", "Detectado como Text Encoder GGUF")
-        if any(x in fn for x in ["flux", "anima", "wan", "sd3", "transformer", "hunyuan", "cogvideo", "ltx"]):
+        if any(x in fn for x in ["flux", "anima", "wan", "sd3", "transformer", "hunyuan", "cogvideo", "ltx", "cosmos"]):
             return ("diffusion_models", "Detectado como DiT Diffusion Model GGUF")
         if any(x in fn for x in ["pony", "sdxl", "illustrious", "sd15", "v1-5", "checkpoint"]):
             return ("checkpoints", "Detectado como Checkpoint GGUF")

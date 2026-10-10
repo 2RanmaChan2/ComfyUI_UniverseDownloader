@@ -5845,17 +5845,18 @@ function isUrlAlreadyAdded(url) {
     if (!url) return false;
     const norm = normalizeModelUrl(url);
 
-    // 1. Revisar si ya está en la bandeja de inspección actual (evitar duplicados visuales idénticos en la mesa)
+    // 1. Revisar si la tarjeta con esta exacta URL de descarga ya está en la bandeja
     const inspected = hubState.inspectedResults || [];
     for (const item of inspected) {
         if (!item) continue;
-        if (item.sourceUrl && normalizeModelUrl(item.sourceUrl) === norm) return true;
         const ver = item.versions && item.versions[0];
         const file = ver && ver.files && ver.files[0];
         if (file && file.download_url && normalizeModelUrl(file.download_url) === norm) return true;
+        // Solo descartar por sourceUrl si el modelo es un archivo único y ya está en la mesa
+        if (item.sourceUrl && normalizeModelUrl(item.sourceUrl) === norm && (!ver || !ver.files || ver.files.length <= 1)) return true;
     }
 
-    // 2. Revisar ÚNICAMENTE descargas actualmente activas o en cola de descarga
+    // 2. Revisar si esa exacta URL ya se está descargando activamente
     const tasks = hubState.tasks || [];
     for (const task of tasks) {
         if (!task) continue;
@@ -5865,8 +5866,6 @@ function isUrlAlreadyAdded(url) {
         }
     }
 
-    // Nota: NUNCA descartar por estar en linkBank ni por tareas antiguas terminadas,
-    // para permitir al usuario inspeccionar o re-descargar cuando lo desee.
     return false;
 }
 
@@ -5914,20 +5913,21 @@ function isModelMetadataAlreadyAdded(data) {
     const file = ver && ver.files && ver.files[0];
     const filename = file && file.filename ? file.filename.trim().toLowerCase() : '';
     const dlUrl = file && file.download_url ? normalizeModelUrl(file.download_url) : '';
-    const srcUrl = data.sourceUrl ? normalizeModelUrl(data.sourceUrl) : '';
+    const dataId = String(data.id || '').trim();
 
-    // 1. Revisar si la tarjeta ya está presente en la lista de inspección visual
+    // 1. Revisar si esta descarga exacta ya está en la mesa de inspección visual
     const inspected = hubState.inspectedResults || [];
     for (const item of inspected) {
         if (!item) continue;
-        if (srcUrl && item.sourceUrl && normalizeModelUrl(item.sourceUrl) === srcUrl) return true;
         const itemVer = item.versions && item.versions[0];
         const itemFile = itemVer && itemVer.files && itemVer.files[0];
         if (itemFile) {
             const itemDl = itemFile.download_url ? normalizeModelUrl(itemFile.download_url) : '';
             const itemFn = itemFile.filename ? itemFile.filename.trim().toLowerCase() : '';
+            const itemId = String(item.id || '').trim();
+
             if (dlUrl && itemDl && dlUrl === itemDl) return true;
-            if (filename && itemFn && filename === itemFn) return true;
+            if (dataId && itemId && dataId === itemId && filename && itemFn && filename === itemFn) return true;
         }
     }
 
@@ -5937,15 +5937,11 @@ function isModelMetadataAlreadyAdded(data) {
         if (!task) continue;
         const st = (task.status || '').toLowerCase();
         if (st === 'downloading' || st === 'pending') {
-            if (srcUrl && task.url && normalizeModelUrl(task.url) === srcUrl) return true;
             const taskDl = task.url ? normalizeModelUrl(task.url) : '';
             if (dlUrl && taskDl && dlUrl === taskDl) return true;
-            const taskFn = task.filename ? task.filename.trim().toLowerCase() : '';
-            if (filename && taskFn && filename === taskFn) return true;
         }
     }
 
-    // NUNCA bloquear la inspección por estar en linkBank o por descargas viejas
     return false;
 }
 
@@ -6529,7 +6525,7 @@ async function hubDetectAndAddLinks(opts = {}) {
     hubState.inspecting = false;
     if (btn) {
         btn.disabled = false;
-        btn.innerText = 'Analizar enlace';
+        btn.innerText = '⚡ Analizar enlaces';
         btn.style.opacity = '1';
         btn.style.cursor = 'pointer';
     }
@@ -7267,11 +7263,15 @@ function renderHubStageHtml() {
                                 <span style="font-size: 20px;">↳</span>
                             </div>
                         </div>
-                        <div class="hk-download-entry">
-                            <input type="text" id="hk-hub-link-input" aria-label="Enlace de descarga" class="hk-input" style="padding: 10px 14px; font-size: 12.5px; font-family: var(--hk-mono);" placeholder="Pega enlaces aquí o pulsa «Portapapeles»..." value="${escapeHtml(hubState.linkInput || '')}">
-                            <button id="hk-btn-hub-add-link" class="hk-btn-cyber primary" style="padding: 10px 18px; font-size: 12px; font-weight: 800; white-space: nowrap;" title="Analizar enlace del cuadro o detectar enlaces del portapapeles">Analizar enlace</button>
-                            <button id="hk-btn-hub-clipboard" class="hk-btn-cyber" style="padding: 10px 14px; font-size: 12px; font-weight: 700; white-space: nowrap;" title="Detectar enlaces de Civitai y Hugging Face de tu portapapeles y prepararlos para descargar">📋 Portapapeles</button>
-                            <button id="hk-btn-hub-quick-save" class="hk-btn-cyber" style="padding: 10px 14px; font-size: 12px; font-weight: 700; white-space: nowrap;" title="Guardar el enlace pegado en el banco, sin iniciar una descarga">⭐ Guardar enlace</button>
+                        <div class="hk-download-entry" style="display: flex; flex-direction: column; gap: 8px;">
+                            <div style="position: relative; width: 100%;">
+                                <textarea id="hk-hub-link-input" rows="2" aria-label="Enlaces de descarga" class="hk-input" style="width: 100%; box-sizing: border-box; padding: 10px 14px; font-size: 12.5px; font-family: var(--hk-mono); resize: vertical; min-height: 48px; max-height: 180px; line-height: 1.45; border-radius: 6px; color: #ffffff;" placeholder="Pega aquí uno o varios enlaces de Civitai, Hugging Face o directos (uno por línea o con Ctrl+V)...">${escapeHtml(hubState.linkInput || '')}</textarea>
+                            </div>
+                            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap;">
+                                <button id="hk-btn-hub-clipboard" class="hk-btn-cyber" style="padding: 8px 14px; font-size: 12px; font-weight: 700; white-space: nowrap;" title="Detectar enlaces de Civitai y Hugging Face de tu portapapeles o abrir pegado en bloque">📋 Portapapeles</button>
+                                <button id="hk-btn-hub-quick-save" class="hk-btn-cyber" style="padding: 8px 14px; font-size: 12px; font-weight: 700; white-space: nowrap;" title="Guardar el enlace pegado en el banco, sin iniciar una descarga">⭐ Guardar enlace</button>
+                                <button id="hk-btn-hub-add-link" class="hk-btn-cyber primary" style="padding: 8px 20px; font-size: 12.5px; font-weight: 800; white-space: nowrap;" title="Analizar los enlaces introducidos">⚡ Analizar enlaces</button>
+                            </div>
                         </div>
                         <div id="hk-hub-inspect-loading" style="display: none; align-items: center; gap: 10px; margin-top: 12px; padding: 11px 12px; background: rgba(168, 85, 247, 0.08); border: 1px solid rgba(168, 85, 247, 0.25); border-radius: 8px; color: #ffffff; font-family: var(--hk-mono); font-size: 12px;">
                             <span style="font-size: 18px;">⚙️</span><span>Analizando enlace y extrayendo metadatos...</span>
@@ -7541,7 +7541,13 @@ function bindHubStageEvents(forcedRoot) {
 
     if (addBtn) {
         addBtn.addEventListener('click', async () => {
-            await hubDetectAndAddLinks({ forceClipboard: false });
+            const rawVal = linkInput ? linkInput.value.trim() : '';
+            const detected = extractModelUrls(rawVal);
+            if (detected.length > 0) {
+                await hubDetectAndAddLinks({ directUrls: detected });
+            } else {
+                await hubDetectAndAddLinks({ forceClipboard: false });
+            }
         });
     }
 
@@ -7582,23 +7588,41 @@ function bindHubStageEvents(forcedRoot) {
     if (linkInput) {
         linkInput.addEventListener('input', (e) => {
             hubState.linkInput = e.target.value;
+            const detected = extractModelUrls(e.target.value);
+            if (addBtn) {
+                if (detected.length > 1) {
+                    addBtn.innerText = `⚡ Analizar (${detected.length}) enlaces`;
+                } else {
+                    addBtn.innerText = '⚡ Analizar enlaces';
+                }
+            }
         });
         linkInput.addEventListener('keydown', async (e) => {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                await hubDetectAndAddLinks({ forceClipboard: false });
+                const rawVal = linkInput.value.trim();
+                const detected = extractModelUrls(rawVal);
+                if (detected.length > 0) {
+                    await hubDetectAndAddLinks({ directUrls: detected });
+                } else {
+                    await hubDetectAndAddLinks({ forceClipboard: false });
+                }
             }
         });
         linkInput.addEventListener('paste', (e) => {
             const pastedText = e.clipboardData?.getData('text') || '';
             const detectedUrls = extractModelUrls(pastedText);
             if (detectedUrls.length > 0) {
-                e.preventDefault();
-                linkInput.value = '';
-                hubState.linkInput = '';
                 setTimeout(() => {
-                    hubDetectAndAddLinks({ directUrls: detectedUrls });
-                }, 20);
+                    const allVal = linkInput.value || pastedText;
+                    const allUrls = extractModelUrls(allVal);
+                    if (addBtn && allUrls.length > 1) {
+                        addBtn.innerText = `⚡ Analizar (${allUrls.length}) enlaces`;
+                    }
+                    if (allUrls.length > 0) {
+                        showToast(`📋 ${allUrls.length} enlace(s) detectado(s). Pulsa 'Analizar' o Enter`, 'info');
+                    }
+                }, 30);
             }
         });
     }
