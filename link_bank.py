@@ -383,10 +383,16 @@ def _enrich_entry_from_url(entry):
                 entry["title"] = data.get("name") or file_obj.get("filename") or "Modelo"
             if not entry.get("creator"):
                 entry["creator"] = data.get("creator") or ""
-            if not entry.get("filename"):
-                entry["filename"] = file_obj.get("filename") or ""
             if not entry.get("category"):
-                entry["category"] = file_obj.get("recommended_folder") or "diffusion_models"
+                if file_obj.get("recommended_folder"):
+                    entry["category"] = file_obj.get("recommended_folder")
+                else:
+                    try:
+                        from . import hub_backend
+                        cat, _ = hub_backend.detect_model_category(filename=entry.get("filename", "") or file_obj.get("filename", ""))
+                        entry["category"] = cat
+                    except Exception:
+                        entry["category"] = "checkpoints"
             if not entry.get("cover_url"):
                 entry["cover_url"] = ver.get("cover_url") or data.get("top_cover") or ""
             if not entry.get("download_url"):
@@ -436,7 +442,7 @@ def _public_entry(entry):
         "title": entry.get("title", ""),
         "creator": entry.get("creator", ""),
         "filename": entry.get("filename", ""),
-        "category": entry.get("category", "diffusion_models"),
+        "category": entry.get("category") or "checkpoints",
         "cover_url": entry.get("cover_url", ""),
         "download_url": entry.get("download_url", ""),
         "provider": entry.get("provider", "direct"),
@@ -532,8 +538,13 @@ def add_link(payload):
     # must not block every other writer for its duration.
     _enrich_entry_from_url(entry)
 
-    if not entry["category"]:
-        entry["category"] = "diffusion_models"
+    if not entry.get("category"):
+        try:
+            from . import hub_backend
+            cat, _ = hub_backend.detect_model_category(filename=entry.get("filename", "") or "")
+            entry["category"] = cat
+        except Exception:
+            entry["category"] = "checkpoints"
 
     with _BankTransaction():
         bank = load_link_bank()
@@ -615,14 +626,14 @@ def batch_download_missing_links():
 
         dl_url = entry.get("download_url") or entry.get("url") or ""
         fn = entry.get("filename") or ""
-        cat = entry.get("category") or "diffusion_models"
+        cat = entry.get("category") or "checkpoints"
 
         if not dl_url or not fn:
             # Intentar enriquecer
             _enrich_entry_from_url(entry)
             dl_url = entry.get("download_url") or entry.get("url") or ""
             fn = entry.get("filename") or ""
-            cat = entry.get("category") or "diffusion_models"
+            cat = entry.get("category") or "checkpoints"
 
         if not dl_url or not fn:
             results.append({

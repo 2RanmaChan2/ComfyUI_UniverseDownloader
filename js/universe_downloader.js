@@ -5783,12 +5783,25 @@ function stopHubTasksPolling() {
 function extractCivitaiModelAndVersion(url) {
     if (!url || typeof url !== 'string') return null;
     try {
-        const m = url.match(/civitai\.(?:com|red)\/models\/(\d+)(?:\/[^?#]*)?(?:\?[^#]*\bmodelVersionId=(\d+))?/i);
-        if (m) {
-            return {
-                modelId: m[1],
-                versionId: m[2] || ''
-            };
+        // Formato 1: /models/12345/versions/67890
+        const mSubVer = url.match(/civitai\.(?:com|red)\/models\/(\d+)\/versions\/(\d+)/i);
+        if (mSubVer) {
+            return { modelId: mSubVer[1], versionId: mSubVer[2] };
+        }
+        // Formato 2: /models/12345?modelVersionId=67890 o /models/12345/slug?modelVersionId=67890
+        const mParamVer = url.match(/civitai\.(?:com|red)\/models\/(\d+)(?:\/[^?#]*)?(?:[?&][^#]*\bmodelVersionId=(\d+))/i);
+        if (mParamVer) {
+            return { modelId: mParamVer[1], versionId: mParamVer[2] };
+        }
+        // Formato 3: /model-versions/67890 o /api/download/models/67890 o /api/v1/model-versions/67890
+        const mDirectVer = url.match(/civitai\.(?:com|red)\/(?:model-versions|api\/download\/models|api\/v1\/model-versions)\/(\d+)/i);
+        if (mDirectVer) {
+            return { modelId: '', versionId: mDirectVer[1] };
+        }
+        // Formato 4: /models/12345 o /models/12345/slug
+        const mModel = url.match(/civitai\.(?:com|red)\/models\/(\d+)/i);
+        if (mModel) {
+            return { modelId: mModel[1], versionId: '' };
         }
     } catch (e) {}
     return null;
@@ -5804,7 +5817,21 @@ function normalizeModelUrl(url) {
     }
     const civ = extractCivitaiModelAndVersion(u);
     if (civ) {
-        return civ.versionId ? `civitai:${civ.modelId}@${civ.versionId}` : `civitai:${civ.modelId}`;
+        if (civ.modelId && civ.versionId) {
+            return `civitai:${civ.modelId}@${civ.versionId}`;
+        } else if (civ.versionId) {
+            return `civitai:ver:${civ.versionId}`;
+        } else if (civ.modelId) {
+            return `civitai:${civ.modelId}`;
+        }
+    }
+    // Hugging Face: normalizar blob/resolve/raw para unificar archivo específico
+    const mHf = u.match(/huggingface\.co\/([^/]+)\/([^/]+)\/(?:blob|resolve|raw)\/([^/]+)\/(.*)/i);
+    if (mHf) {
+        const repo = `${mHf[1]}/${mHf[2]}`.toLowerCase();
+        const branch = mHf[3].toLowerCase();
+        const path = mHf[4].split('?')[0].split('#')[0].toLowerCase();
+        return `hf:${repo}@${branch}:${path}`;
     }
     try {
         const parsed = new URL(u);
@@ -5817,9 +5844,8 @@ function normalizeModelUrl(url) {
 function isUrlAlreadyAdded(url) {
     if (!url) return false;
     const norm = normalizeModelUrl(url);
-    const civ = extractCivitaiModelAndVersion(url);
 
-    // 1. Check inspectedResults (cards already visible in intake area)
+    // 1. Revisar si ya está en la bandeja de inspección actual (evitar duplicados visuales idénticos en la mesa)
     const inspected = hubState.inspectedResults || [];
     for (const item of inspected) {
         if (!item) continue;
@@ -5827,37 +5853,20 @@ function isUrlAlreadyAdded(url) {
         const ver = item.versions && item.versions[0];
         const file = ver && ver.files && ver.files[0];
         if (file && file.download_url && normalizeModelUrl(file.download_url) === norm) return true;
-        // Civitai: solo duplicado si coincide tanto el modelId como la versionId específica
-        if (civ && civ.modelId && civ.versionId && String(item.id) === civ.modelId) {
-            if (ver && ver.id && String(ver.id) === civ.versionId) {
-                return true;
-            }
-        }
     }
 
-    // 2. Check active/pending/completed tasks
+    // 2. Revisar ÚNICAMENTE descargas actualmente activas o en cola de descarga
     const tasks = hubState.tasks || [];
     for (const task of tasks) {
         if (!task) continue;
-        if (task.url && normalizeModelUrl(task.url) === norm) return true;
-        const taskModelId = task.civitai_info?.model_id || task.model_id;
-        const taskVerId = task.civitai_info?.version_id;
-        if (civ && civ.modelId && civ.versionId && String(taskModelId) === civ.modelId && String(taskVerId) === civ.versionId) {
-            return true;
+        const st = (task.status || '').toLowerCase();
+        if (st === 'downloading' || st === 'pending') {
+            if (task.url && normalizeModelUrl(task.url) === norm) return true;
         }
     }
 
-    // 3. Check Link Bank (also includes local items on disk)
-    const bank = hubState.linkBank || [];
-    for (const item of bank) {
-        if (!item) continue;
-        if (item.url && normalizeModelUrl(item.url) === norm) return true;
-        if (item.download_url && normalizeModelUrl(item.download_url) === norm) return true;
-        if (civ && civ.modelId && civ.versionId && String(item.model_id) === civ.modelId && String(item.version_id) === civ.versionId) {
-            return true;
-        }
-    }
-
+    // Nota: NUNCA descartar por estar en linkBank ni por tareas antiguas terminadas,
+    // para permitir al usuario inspeccionar o re-descargar cuando lo desee.
     return false;
 }
 
@@ -5907,7 +5916,7 @@ function isModelMetadataAlreadyAdded(data) {
     const dlUrl = file && file.download_url ? normalizeModelUrl(file.download_url) : '';
     const srcUrl = data.sourceUrl ? normalizeModelUrl(data.sourceUrl) : '';
 
-    // 1. Check inspectedResults (staged cards)
+    // 1. Revisar si la tarjeta ya está presente en la lista de inspección visual
     const inspected = hubState.inspectedResults || [];
     for (const item of inspected) {
         if (!item) continue;
@@ -5922,28 +5931,21 @@ function isModelMetadataAlreadyAdded(data) {
         }
     }
 
-    // 2. Check active/completed tasks
+    // 2. Revisar si está actualmente descargándose en segundo plano
     const tasks = hubState.tasks || [];
     for (const task of tasks) {
         if (!task) continue;
-        if (srcUrl && task.url && normalizeModelUrl(task.url) === srcUrl) return true;
-        const taskDl = task.url ? normalizeModelUrl(task.url) : '';
-        if (dlUrl && taskDl && dlUrl === taskDl) return true;
-        const taskFn = task.filename ? task.filename.trim().toLowerCase() : '';
-        if (filename && taskFn && filename === taskFn) return true;
+        const st = (task.status || '').toLowerCase();
+        if (st === 'downloading' || st === 'pending') {
+            if (srcUrl && task.url && normalizeModelUrl(task.url) === srcUrl) return true;
+            const taskDl = task.url ? normalizeModelUrl(task.url) : '';
+            if (dlUrl && taskDl && dlUrl === taskDl) return true;
+            const taskFn = task.filename ? task.filename.trim().toLowerCase() : '';
+            if (filename && taskFn && filename === taskFn) return true;
+        }
     }
 
-    // 3. Check link bank
-    const bank = hubState.linkBank || [];
-    for (const item of bank) {
-        if (!item) continue;
-        if (srcUrl && item.url && normalizeModelUrl(item.url) === srcUrl) return true;
-        const bankDl = item.download_url ? normalizeModelUrl(item.download_url) : '';
-        if (dlUrl && bankDl && dlUrl === bankDl) return true;
-        const bankFn = item.filename ? item.filename.trim().toLowerCase() : '';
-        if (filename && bankFn && filename === bankFn) return true;
-    }
-
+    // NUNCA bloquear la inspección por estar en linkBank o por descargas viejas
     return false;
 }
 
@@ -5987,7 +5989,7 @@ function renderInspectedCardItemHtml(res, idx) {
     const title = res.name || file.filename;
     const verName = ver.name || '';
     const creator = res.creator || 'Autor';
-    const recFolder = res.selectedFolder || file.recommended_folder || 'diffusion_models';
+    const recFolder = res.selectedFolder || file.recommended_folder || 'checkpoints';
     const recSubfolder = res.customSubfolder !== undefined ? res.customSubfolder : (file.recommended_subfolder || '');
     const reason = file.reason || '';
     const sizeStr = file.size_formatted || '';
@@ -6026,7 +6028,7 @@ function renderInspectedCardItemHtml(res, idx) {
                 </div>
 
                 <div style="font-family: var(--hk-mono); font-size: 10.5px; color: #ffffff; background: rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--hk-border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                    🎯 <strong>Sugerido:</strong> models/${escapeHtml(file.recommended_folder || 'diffusion_models')}/${file.recommended_subfolder ? `<strong style="color: var(--hk-purple-light);">${escapeHtml(file.recommended_subfolder)}/</strong>` : ''} <span style="color: var(--hk-text-muted);">(${escapeHtml(reason || 'auto-clasificado')})</span>
+                    🎯 <strong>Sugerido:</strong> models/${escapeHtml(file.recommended_folder || 'checkpoints')}/${file.recommended_subfolder ? `<strong style="color: var(--hk-purple-light);">${escapeHtml(file.recommended_subfolder)}/</strong>` : ''} <span style="color: var(--hk-text-muted);">(${escapeHtml(reason || 'auto-clasificado')})</span>
                 </div>
 
                 ${isAlreadyOnDisk ? `
@@ -6138,6 +6140,8 @@ function bindInspectedListEvents(container) {
                 if (subInp) subInp.value = parts.slice(1).join('/');
             } else if (file && val === file.recommended_folder && file.recommended_subfolder) {
                 if (subInp) subInp.value = file.recommended_subfolder;
+            } else {
+                if (subInp) subInp.value = '';
             }
             item.selectedFolder = val;
             if (subInp) item.customSubfolder = subInp.value;
@@ -6465,27 +6469,54 @@ async function hubDetectAndAddLinks(opts = {}) {
                 const inspected = data.data;
                 inspected.sourceUrl = url;
 
-                if (isModelMetadataAlreadyAdded(inspected)) {
-                    omittedUrls.push(url);
-                    continue;
+                // Desempaquetar si el repositorio o modelo contiene múltiples archivos (ej. VAE + Text Encoder + DiT)
+                const itemsToProcess = [];
+                const ver0 = inspected.versions && inspected.versions[0];
+                if (ver0 && Array.isArray(ver0.files) && ver0.files.length > 1) {
+                    for (const f of ver0.files) {
+                        itemsToProcess.push({
+                            ...inspected,
+                            id: `${inspected.id}:${f.filename}`,
+                            name: `${inspected.name || inspected.id}: ${f.filename}`,
+                            sourceUrl: f.download_url || url,
+                            already_downloaded: !!f.already_downloaded,
+                            local_status: f.local_status || 'missing',
+                            local_path: f.local_path || '',
+                            local_relpath: f.local_relpath || '',
+                            matched_filename: f.filename,
+                            versions: [{
+                                ...ver0,
+                                files: [f]
+                            }],
+                            selectedFolder: f.recommended_folder || 'checkpoints',
+                            customSubfolder: f.recommended_subfolder || ''
+                        });
+                    }
+                } else {
+                    const f0 = ver0 && ver0.files && ver0.files[0];
+                    inspected.selectedFolder = (f0 && f0.recommended_folder) || 'checkpoints';
+                    inspected.customSubfolder = (f0 && f0.recommended_subfolder) || '';
+                    itemsToProcess.push(inspected);
                 }
 
-                // Detección de presencia previa en disco local
-                const isAlreadyOnDisk = !!(inspected.already_downloaded || inspected.local_status === 'present');
-                if (isAlreadyOnDisk && hubState.omitDownloaded !== false && (opts.forceClipboard || newUrls.length > 1)) {
-                    downloadedOmittedList.push(inspected);
-                    omittedUrls.push(url);
-                    continue;
+                for (const itemCard of itemsToProcess) {
+                    if (isModelMetadataAlreadyAdded(itemCard)) {
+                        omittedUrls.push(itemCard.sourceUrl || url);
+                        continue;
+                    }
+
+                    // Omitir automáticamente ÚNICAMENTE si viene del portapapeles masivo y el usuario tiene activado "Omitir ya descargados"
+                    const isAlreadyOnDisk = !!(itemCard.already_downloaded || itemCard.local_status === 'present');
+                    if (isAlreadyOnDisk && hubState.omitDownloaded && opts.forceClipboard && uniqueUrls.length > 1) {
+                        downloadedOmittedList.push(itemCard);
+                        omittedUrls.push(itemCard.sourceUrl || url);
+                        continue;
+                    }
+
+                    hubState.inspectedResults.push(itemCard);
+                    addedCount++;
+                    updateInspectedResultsUI();
                 }
-
-                const v = inspected.versions && inspected.versions[0];
-                const f = v && v.files && v.files[0];
-                inspected.selectedFolder = (f && f.recommended_folder) || 'diffusion_models';
-                inspected.customSubfolder = (f && f.recommended_subfolder) || '';
-
-                hubState.inspectedResults.push(inspected);
-                addedCount++;
-                updateInspectedResultsUI();
             } else {
                 failedCount++;
             }
@@ -7516,7 +7547,35 @@ function bindHubStageEvents(forcedRoot) {
 
     if (clipBtn) {
         clipBtn.addEventListener('click', async () => {
-            await hubDetectAndAddLinks({ forceClipboard: true });
+            // 1. Intentar lectura directa automática del portapapeles
+            let clipText = '';
+            try {
+                clipText = await readClipboardText();
+            } catch (e) {}
+
+            const urlsInClip = extractModelUrls(clipText);
+            if (urlsInClip.length > 0) {
+                showToast(`📋 ${urlsInClip.length} enlace(s) detectado(s) del portapapeles`, 'info');
+                await hubDetectAndAddLinks({ directUrls: urlsInClip });
+                return;
+            }
+
+            // 2. Intentar leer historial del backend (Windows / Linux local con display)
+            try {
+                const clipRes = await api.fetchApi('/universe_downloader/api/hub/clipboard_links');
+                if (clipRes && clipRes.ok) {
+                    const clipData = await safeJson(clipRes);
+                    if (clipData && Array.isArray(clipData.urls) && clipData.urls.length > 0) {
+                        showToast(`📋 ${clipData.urls.length} enlace(s) detectado(s)`, 'info');
+                        await hubDetectAndAddLinks({ directUrls: clipData.urls });
+                        return;
+                    }
+                }
+            } catch (e) {}
+
+            // 3. Si falló la lectura automática (ej. Vast.ai sobre HTTP / permisos de navegador),
+            // abrir inmediatamente el modal cyberpunk para pegar con Ctrl+V:
+            openHubBulkPasteModal(clipText || '');
         });
     }
 
@@ -7602,6 +7661,78 @@ function bindTasksCardEvents(container) {
             }
         });
     });
+}
+
+function openHubBulkPasteModal(initialText = '') {
+    const existing = document.getElementById('hk-hub-bulk-paste-modal-backdrop');
+    if (existing) existing.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'hk-hub-bulk-paste-modal-backdrop';
+    backdrop.className = 'hk-hub-modal-backdrop';
+    backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) closeStudioDialog(backdrop);
+    });
+
+    backdrop.innerHTML = `
+        <div class="pv-modal hk-hub-token-modal" style="width: 580px; max-width: 92vw; padding: 20px 22px;">
+            <div class="hk-hub-token-header" style="margin-bottom: 12px;">
+                <div class="hk-hub-token-heading">
+                    <span class="hk-hub-token-icon">📋</span>
+                    <span class="hk-dialog-title">Pegar Enlaces (Portapapeles)</span>
+                </div>
+                <button class="hk-dialog-close" id="hk-btn-bulk-paste-close" aria-label="Cerrar modal">✕</button>
+            </div>
+            <div style="font-size: 12px; color: var(--hk-text-muted); margin-bottom: 12px; line-height: 1.5;">
+                En navegadores remotos o sin HTTPS (como Vast.ai), el navegador restringe la lectura directa automática.<br>
+                <strong style="color: #ffffff;">Presiona Ctrl+V aquí para pegar uno o varios enlaces</strong> (Civitai, Hugging Face o enlaces directos, separados por saltos de línea):
+            </div>
+            <textarea id="hk-bulk-paste-textarea" class="hk-input" rows="7" style="width: 100%; box-sizing: border-box; resize: vertical; font-family: var(--hk-mono); font-size: 12px; padding: 12px; background: rgba(0,0,0,0.6); border: 1px solid var(--hk-border); border-radius: 6px; color: #ffffff;" placeholder="Pega aquí tus enlaces con Ctrl+V...&#10;Ejemplo:&#10;https://civitai.com/models/12345&#10;https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/blob/main/split_files/vae/wan2.1_vae.safetensors&#10;https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/blob/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors">${escapeHtml(initialText)}</textarea>
+            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 14px;">
+                <button id="hk-btn-bulk-paste-cancel" class="hk-btn-cyber" style="padding: 8px 16px;">Cancelar</button>
+                <button id="hk-btn-bulk-paste-submit" class="hk-btn-cyber primary" style="padding: 8px 20px; font-weight: 800;">⚡ Analizar Enlaces</button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(backdrop);
+    trapStudioFocus(backdrop);
+
+    const txt = backdrop.querySelector('#hk-bulk-paste-textarea');
+    if (txt) {
+        setTimeout(() => txt.focus(), 60);
+        txt.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault();
+                backdrop.querySelector('#hk-btn-bulk-paste-submit')?.click();
+            }
+        });
+        txt.addEventListener('paste', () => {
+            setTimeout(() => {
+                const detected = extractModelUrls(txt.value);
+                if (detected.length > 0) {
+                    const submitBtn = backdrop.querySelector('#hk-btn-bulk-paste-submit');
+                    if (submitBtn) submitBtn.innerText = `⚡ Analizar (${detected.length}) Enlaces`;
+                }
+            }, 30);
+        });
+    }
+
+    const doSubmit = () => {
+        const val = txt ? txt.value.trim() : '';
+        const detected = extractModelUrls(val);
+        if (detected.length === 0) {
+            showToast('⚠️ No se detectaron enlaces válidos en el texto.', 'warning');
+            return;
+        }
+        closeStudioDialog(backdrop);
+        showToast(`📋 ${detected.length} enlace(s) listos para analizar`, 'info');
+        hubDetectAndAddLinks({ directUrls: detected });
+    };
+
+    backdrop.querySelector('#hk-btn-bulk-paste-close')?.addEventListener('click', () => closeStudioDialog(backdrop));
+    backdrop.querySelector('#hk-btn-bulk-paste-cancel')?.addEventListener('click', () => closeStudioDialog(backdrop));
+    backdrop.querySelector('#hk-btn-bulk-paste-submit')?.addEventListener('click', doSubmit);
 }
 
 function openHubSettingsModal() {
@@ -7927,6 +8058,30 @@ app.registerExtension({
                     });
                 } catch (e) {}
             }
+
+            // Atajo global Ctrl+V para detectar enlaces al estar en Universe Downloader (funciona incluso en HTTP / Vast.ai)
+            document.addEventListener('paste', (e) => {
+                const overlay = document.getElementById('universe-downloader-overlay');
+                if (!overlay || overlay.style.display === 'none') return;
+
+                const activeEl = document.activeElement;
+                if (activeEl && (activeEl.id === 'hk-bulk-paste-textarea' || activeEl.id === 'hk-hub-link-input')) {
+                    return;
+                }
+                if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+                    return;
+                }
+
+                const pastedText = e.clipboardData?.getData('text') || '';
+                if (!pastedText) return;
+
+                const detectedUrls = extractModelUrls(pastedText);
+                if (detectedUrls.length > 0) {
+                    e.preventDefault();
+                    showToast(`📋 ${detectedUrls.length} enlace(s) detectado(s) desde el portapapeles`, 'info');
+                    hubDetectAndAddLinks({ directUrls: detectedUrls });
+                }
+            });
 
             console.log("[Universe Downloader] Extensión cargada con éxito. Botón flotante listo.");
         } catch (err) {

@@ -471,9 +471,8 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
         return ("embeddings", "Detectado como Embedding")
 
     # 8. Modern DiT & Video Diffusion Models (Anima, Wan 2.1, Flux, SD3/3.5, Hunyuan, CogVideo, Mochi, LTX)
-    # Repo matching ONLY applies if the file is NOT a subcomponent (VAE, text encoder, etc.)
+    # Standalone diffusion transformers/unets without bundled text encoders/VAEs
     dit_architectures = [
-        ("anima", "Anima DiT"),
         ("wan2.1", "Wan 2.1 Video"),
         ("wan2", "Wan 2 Video"),
         ("wan", "Wan Video"),
@@ -492,47 +491,67 @@ def detect_model_category(filename="", model_type="", base_model="", repo_name="
         ("pixart", "PixArt DiT"),
         ("auraflow", "AuraFlow DiT"),
         ("chameleon", "Chameleon"),
-        ("kolors", "Kolors")
+        ("kolors", "Kolors"),
+        ("anima", "Anima DiT")
     ]
-    is_dit_path = "/diffusion_models" in combined_path or "split_files/diffusion_models" in combined_path or "transformer" in combined_path
-    for arch_key, arch_label in dit_architectures:
-        matched = False
-        if arch_key == "wan":
-            if re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', fn, re.I) or \
-               re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', bm, re.I) or \
-               re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', repo, re.I) or \
-               (re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', combined_text, re.I) and is_dit_path):
-                matched = True
-        else:
-            if arch_key in bm or arch_key in fn or arch_key in ph or (arch_key in combined_text and is_dit_path) or arch_key in repo:
-                matched = True
-        if matched:
-            return ("diffusion_models", f"Detectado como DiT Diffusion Model ({arch_label})")
+    is_dit_path = "/diffusion_models" in combined_path or "split_files/diffusion_models" in combined_path or "transformer" in combined_path or "/unet" in combined_path
+    
+    # Check if explicitly a Checkpoint type (Civitai Checkpoints go to models/checkpoints)
+    is_full_checkpoint = (mt == "CHECKPOINT") or any(k in bm for k in ["illustrious", "pony", "sdxl", "sd 1.5", "sd 2.1", "sd-1.5", "sd-2.1", "v1-5", "v2-1", "noobai", "animagine"])
+    
+    if not is_full_checkpoint:
+        for arch_key, arch_label in dit_architectures:
+            matched = False
+            if arch_key == "wan":
+                if re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', fn, re.I) or \
+                   re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', ph, re.I) or \
+                   ((re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', bm, re.I) or re.search(r'(?:^|[\W_])wan(?:2(?:\.1)?)?(?:[\W_]|$)', repo, re.I)) and is_dit_path):
+                    matched = True
+            elif arch_key in ["flux", "flux.1", "flux1"]:
+                # Flux standalone transformer (no checkpoint completo)
+                if any(x in fn for x in ["flux1-dev", "flux1-schnell", "flux1-kontext", "flux-dev", "flux-schnell", "flux_dev", "flux_schnell"]) or \
+                   ((arch_key in fn or arch_key in ph) and any(x in fn for x in ["transformer", "diffusion_model", "unet", "fp8", "bf16", "q4", "q8"])) or \
+                   is_dit_path:
+                    matched = True
+            else:
+                if (arch_key in fn or arch_key in ph) or ((arch_key in bm or arch_key in repo) and is_dit_path):
+                    matched = True
+            if matched:
+                return ("diffusion_models", f"Detectado como DiT Diffusion Model ({arch_label})")
 
-    if is_dit_path:
-        return ("diffusion_models", "Detectado como Diffusion Model (Ruta)")
+        if is_dit_path:
+            return ("diffusion_models", "Detectado como Diffusion Model (Ruta)")
 
     # 9. GGUF Quantized Models
     if fn.endswith(".gguf"):
-        if any(x in fn for x in ["t5", "qwen", "clip"]):
+        if any(x in fn for x in ["t5", "qwen", "clip", "text_encoder"]):
             return ("text_encoders", "Detectado como Text Encoder GGUF")
-        if any(x in fn for x in ["flux", "anima", "wan", "sd3", "transformer"]):
+        if any(x in fn for x in ["flux", "anima", "wan", "sd3", "transformer", "hunyuan", "cogvideo", "ltx"]):
             return ("diffusion_models", "Detectado como DiT Diffusion Model GGUF")
+        if any(x in fn for x in ["pony", "sdxl", "illustrious", "sd15", "v1-5", "checkpoint"]):
+            return ("checkpoints", "Detectado como Checkpoint GGUF")
+        if any(x in fn for x in ["lora"]):
+            return ("loras", "Detectado como LoRA GGUF")
         return ("diffusion_models", "Detectado como Modelo Cuantizado GGUF")
 
-    # 10. Modelos Base / Checkpoints (Arquitectura Anima DiT)
+    # 10. Modelos Base / Checkpoints Completos (ComfyUI models/checkpoints)
     if mt == "CHECKPOINT":
         base_label = base_model or "Modelo Base"
-        return ("diffusion_models", f"Destino Anima DiT ({base_label})")
+        return ("checkpoints", f"Detectado como Checkpoint ({base_label})")
 
-    for ckpt_base in ["illustrious", "pony", "sdxl", "sd 1.5", "sd 2.1", "sd xl"]:
+    for ckpt_base in ["illustrious", "pony", "sdxl", "sd 1.5", "sd 2.1", "sd-1.5", "sd-2.1", "v1-5", "v2-1", "animagine", "noobai", "dreamshaper", "juggernaut", "realvis"]:
         if ckpt_base in bm or ckpt_base in fn:
-            return ("diffusion_models", f"Destino Anima DiT ({ckpt_base.upper()})")
+            return ("checkpoints", f"Detectado como Checkpoint ({ckpt_base.upper()})")
+
+    if "/checkpoints" in combined_path or "checkpoint" in fn:
+        return ("checkpoints", "Detectado como Checkpoint")
 
     if fn.endswith((".safetensors", ".ckpt", ".pt", ".bin")):
-        return ("diffusion_models", "Destino por defecto para modelos")
+        if any(x in fn for x in ["transformer", "diffusion_model", "dit"]):
+            return ("diffusion_models", "Detectado como DiT / Transformer")
+        return ("checkpoints", "Destino por defecto para modelos completos")
 
-    return ("diffusion_models", "Destino por defecto")
+    return ("checkpoints", "Destino por defecto")
 
 def is_character_model(model_type="", tags=None, name="", trained_words=None):
     """
@@ -559,8 +578,9 @@ def is_character_model(model_type="", tags=None, name="", trained_words=None):
 
 def resolve_character_lora_subfolder():
     """
-    Scans the local ComfyUI models/loras directory to find the user's preferred
-    character subfolder hierarchy. Defaults to 'anime/characters'.
+    Scans the local ComfyUI models/loras directory. Only returns a subfolder
+    if that subfolder ALREADY physically exists on the user's disk.
+    Defaults to empty string ("") so models stay clean in models/loras/ without unwanted folders.
     """
     try:
         loras_dir = get_target_directory_for_category("loras")
@@ -570,12 +590,12 @@ def resolve_character_lora_subfolder():
             if os.path.isdir(os.path.join(loras_dir, "characters")):
                 return "characters"
             if os.path.isdir(os.path.join(loras_dir, "anime")):
-                return "anime/characters"
+                return "anime"
             if os.path.isdir(os.path.join(loras_dir, "personajes")):
                 return "personajes"
     except Exception:
         pass
-    return "anime/characters"
+    return ""
 
 def get_target_directory_for_category(category, subfolder=""):
     """
@@ -2132,7 +2152,10 @@ def parse_civitai_model_card(item):
             rec_subfolder = ""
             if cat == "loras" and is_character_model(model_type=model_type, tags=tags, name=name, trained_words=trained_words):
                 rec_subfolder = resolve_character_lora_subfolder()
-                reason = f"Detectado como LoRA de Personaje ({model_type or 'LoRA'}) → {rec_subfolder}"
+                if rec_subfolder:
+                    reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+                else:
+                    reason = f"Detectado como LoRA ({model_type or 'LoRA'})"
 
             files.append({
                 "filename": fname,
@@ -2284,12 +2307,14 @@ def enrich_inspected_with_local_status(data):
             f["local_path"] = f_p if f_st == "present" else ""
             f["local_relpath"] = _get_relpath(f_p) if f_st == "present" else ""
             f["already_downloaded"] = (f_st == "present")
-            if f_st == "present" and not is_present:
-                data["local_status"] = "present"
-                data["local_path"] = f_p
-                data["local_relpath"] = f["local_relpath"]
-                data["already_downloaded"] = True
-                data["matched_filename"] = f_m
+        if len(files) > 1:
+            all_present = all(f.get("already_downloaded") for f in files)
+            any_present = any(f.get("already_downloaded") for f in files)
+            data["already_downloaded"] = all_present
+            data["local_status"] = "present" if all_present else ("partial" if any_present else "missing")
+        else:
+            data["already_downloaded"] = is_present
+            data["local_status"] = status
     except Exception as e:
         logging.warning("[Universe Downloader] Error en enrich_inspected_with_local_status: %s", e)
     return data
@@ -2336,7 +2361,10 @@ def _inspect_universal_url_raw(raw_url):
                 rec_subfolder = ""
                 if cat == "loras" and is_character_model(name=fname or v_data.get("name", "")):
                     rec_subfolder = resolve_character_lora_subfolder()
-                    reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+                    if rec_subfolder:
+                        reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+                    else:
+                        reason = f"Detectado como LoRA"
                 files.append({
                     "filename": fname,
                     "type": f.get("type", "Model"),
@@ -2423,7 +2451,10 @@ def _inspect_universal_url_raw(raw_url):
         rec_subfolder = ""
         if cat == "loras" and is_character_model(name=filename or repo_id):
             rec_subfolder = resolve_character_lora_subfolder()
-            reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+            if rec_subfolder:
+                reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+            else:
+                reason = "Detectado como LoRA"
 
         # Get file size via quick HEAD request with HF token if available
         size_bytes = 0
@@ -2486,7 +2517,10 @@ def _inspect_universal_url_raw(raw_url):
                     rec_subfolder = ""
                     if cat == "loras" and is_character_model(tags=tags, name=fname or repo_id):
                         rec_subfolder = resolve_character_lora_subfolder()
-                        reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+                        if rec_subfolder:
+                            reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+                        else:
+                            reason = "Detectado como LoRA"
                     direct_url = f"https://huggingface.co/{repo_id}/resolve/main/{rfn}"
                     model_files.append({
                         "filename": fname,
@@ -2535,7 +2569,10 @@ def _inspect_universal_url_raw(raw_url):
     rec_subfolder = ""
     if cat == "loras" and is_character_model(name=filename):
         rec_subfolder = resolve_character_lora_subfolder()
-        reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+        if rec_subfolder:
+            reason = f"Detectado como LoRA de Personaje → {rec_subfolder}"
+        else:
+            reason = "Detectado como LoRA"
 
     size_bytes = 0
     try:
